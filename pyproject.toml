@@ -8,7 +8,15 @@ readme = "README.md"
 
 [tool.poetry.dependencies]
 python = "^3.10"
+mlx = "^0.21.1"
+pyobjc = "^10.3.2"
+rich = "^13.9.4"
+pydantic = "^2.10.4"
 
+
+[tool.poetry.group.experimental.dependencies]
+transformers = { git = "git+https://github.com/huggingface/transformers.git" }
+torch = "^2.0.0"
 
 [build-system]
 requires = ["poetry-core"]
