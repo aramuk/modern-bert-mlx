@@ -15,8 +15,11 @@ pydantic = "^2.10.4"
 
 
 [tool.poetry.group.experimental.dependencies]
-transformers = { git = "git+https://github.com/huggingface/transformers.git" }
+# Install transformers>=4.48.0.dev0 to bring in modernbert implementation for weights.
+# transformers = { git = "git+https://github.com/huggingface/transformers.git", rev = "919220d" }
+transformers = { path = "./transformers" }
 torch = "^2.0.0"
+safetensors = "^0.4.5"
 
 [build-system]
 requires = ["poetry-core"]

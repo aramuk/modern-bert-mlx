@@ -1,7 +1,18 @@
+# Env files
 .env
 
+# Data files
 logs/
 data/
 *.zip
 
+# Weight files
+*.safetensors
+*.npz
+*.pt
+
+# Generated files
 __pycache__/
+
+# Local packages
+transformers
