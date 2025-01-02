@@ -33,6 +33,9 @@ class ModuleList(nn.Module):
         else:
             return self.get(self._get_abs_string_index(idx))
 
+    def __iter__(self):
+        yield from self.children().values()
+
 
 if __name__ == "__main__":
     ml = ModuleList([nn.Linear(4, 8) for _ in range(3)])
