@@ -17,12 +17,14 @@ class ModernBertConfig(BaseModel):
     hidden_dim: int = 2304  # 768 * 3
     intermediate_dim: int = 1152  # 2304 / 2
     layer_norm_eps: float = 1e-5
+    norm_bias: bool = False
     # Encoder Args
     encoder_num_layers: int = 22
     encoder_drop_p: float = 0.0
     # Attention Args
     num_attention_heads: int = 12
-
+    # Decoder Args
+    decoder_bias: bool = True
 
 
 class ModernBertEmbedder(nn.Module):
@@ -31,7 +33,10 @@ class ModernBertEmbedder(nn.Module):
         self.config = config
         self.tok_embeddings = nn.Embedding(config.vocab_size, config.embed_dim)
         self.norm = nn.LayerNorm(
-            config.embed_dim, eps=config.layer_norm_eps, affine=True
+            config.embed_dim,
+            eps=config.layer_norm_eps,
+            affine=True,
+            bias=config.norm_bias,
         )
         self.drop = nn.Dropout(p=config.embed_drop_p)
 
@@ -89,11 +94,11 @@ class ModernBertAttention(nn.Module):
         # [batch_size, nheads, seqlen, head_dim]
         Q_rot = self.rotary_emb(Q)
         K_rot = self.rotary_emb(K)
-        # Q_rot = mx.core.fast.rope(Q, dims=self.head_dim, traditional=False)
-        # K_rot = mx.core.fast.rope(K, dims=self.head_dim, traditional=False)
+        # Q_rot = mx.fast.rope(Q, dims=self.head_dim, traditional=False)
+        # K_rot = mx.fast.rope(K, dims=self.head_dim, traditional=False)
 
         # TODO: select configured attention implementation dynamically
-        attn_out: mx.array = mx.core.fast.scaled_dot_product_attention(
+        attn_out: mx.array = mx.fast.scaled_dot_product_attention(
             Q_rot, K_rot, V, mask=mask
         )
         attn_out = attn_out.transpose(1, 2).view(batch_size, -1, self.config.hidden_dim)
@@ -108,13 +113,19 @@ class ModernBertEncoderLayer(nn.Module):
         super().__init__()
         if has_attn_norm:
             self.attn_norm = nn.LayerNorm(
-                config.embed_dim, config.layer_norm_eps, affine=True
+                config.embed_dim,
+                config.layer_norm_eps,
+                affine=True,
+                bias=config.norm_bias,
             )
         else:
             self.attn_norm = nn.Identity()
         self.attn = ModernBertAttention(config)
         self.mlp_norm = nn.LayerNorm(
-            config.embed_dim, config.layer_norm_eps, affine=True
+            config.embed_dim,
+            config.layer_norm_eps,
+            affine=True,
+            bias=config.norm_bias,
         )
         self.mlp = ModernBertMLP(config)
 
@@ -133,10 +144,16 @@ class ModernBertBackbone(nn.Module):
         self.embedder = ModernBertEmbedder(config)
         self.encoder = ModuleList(
             [ModernBertEncoderLayer(config, has_attn_norm=False)]
-            + [ModernBertEncoderLayer(config) for _ in range(1, config.encoder_num_layers)]
+            + [
+                ModernBertEncoderLayer(config)
+                for _ in range(1, config.encoder_num_layers)
+            ]
         )
         self.final_norm = nn.LayerNorm(
-            config.intermediate_dim, eps=config.layer_norm_eps, affine=True
+            config.embed_dim,
+            eps=config.layer_norm_eps,
+            affine=True,
+            bias=config.norm_bias,
         )
 
     def __call__(
@@ -161,14 +178,17 @@ class ModernBertBackbone(nn.Module):
 class ModernBertPredictionHead(nn.Module):
     def __init__(self, config: ModernBertConfig):
         super().__init__()
-        self.dense = nn.Linear(config.embed_dim, config.embed_dim, bias=False)
+        self.fc = nn.Linear(config.embed_dim, config.embed_dim, bias=False)
         self.act = nn.GELU()
         self.norm = nn.LayerNorm(
-            config.embed_dim, eps=config.layer_norm_eps, affine=True
+            config.embed_dim,
+            eps=config.layer_norm_eps,
+            affine=True,
+            bias=config.norm_bias,
         )
 
     def __call__(self, x: mx.array) -> mx.array:
-        x = self.dense(x)
+        x = self.fc(x)
         x = self.act(x)
         x = self.norm(x)
         return x
@@ -178,9 +198,11 @@ class ModernBertBase(nn.Module):
     def __init__(self, config: Optional[ModernBertConfig] = None, **kwargs):
         super().__init__()
         self.config = config or ModernBertConfig(**kwargs)
-        self.model = ModernBertBackbone(config)
+        self.backbone = ModernBertBackbone(config)
         self.head = ModernBertPredictionHead(config)
-        self.decoder = nn.Linear(config.embed_dim, config.vocab_size, bias=True)
+        self.decoder = nn.Linear(
+            config.embed_dim, config.vocab_size, bias=config.decoder_bias
+        )
 
     def __call__(
         self,
@@ -197,6 +219,8 @@ class ModernBertBase(nn.Module):
 if __name__ == "__main__":
     config = ModernBertConfig()
     model = ModernBertBase(config)
+
+    model.load_weights("modernbert-mlx.safetensors")
 
     from rich import print
 

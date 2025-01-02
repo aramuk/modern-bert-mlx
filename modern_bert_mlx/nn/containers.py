@@ -1,7 +1,6 @@
 import operator
 from typing import Iterable, Union
 
-import mlx as mx
 import mlx.nn as nn
 from rich import print
 
