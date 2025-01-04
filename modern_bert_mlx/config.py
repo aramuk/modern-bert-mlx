@@ -11,6 +11,7 @@ class AttentionConfig(BaseModel):
     global_rope_theta: float = 160000.0
     local_attention: int = 128
     local_rope_theta: int = 10000.0
+    rope_max_pos_embeddings: int = 2048
     output_attn: bool = 12
 
 
@@ -34,8 +35,3 @@ class ModernBertConfig(BaseModel):
     mlp_dropout: float = 0.0
     # Decoder Args
     decoder_bias: bool = True
-
-
-from rich import print
-
-print(ModernBertConfig())
