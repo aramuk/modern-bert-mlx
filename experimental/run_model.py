@@ -37,12 +37,12 @@ def main():
     predicted_token = decode(np.array(y))
     print(text.replace("[MASK]", f"[red]{predicted_token}[/red]"))
 
-    model = AutoModelForMaskedLM.from_pretrained(model_id)
-    inputs = tokenizer(text, return_tensors="pt")
-    print("ModernBert says...")
-    outputs = model(**inputs)
-    predicted_token = decode(outputs.logits)
-    print(text.replace("[MASK]", f"[red]{predicted_token}[/red]"))
+    # model = AutoModelForMaskedLM.from_pretrained(model_id)
+    # inputs = tokenizer(text, return_tensors="pt")
+    # print("ModernBert says...")
+    # outputs = model(**inputs)
+    # predicted_token = decode(outputs.logits)
+    # print(text.replace("[MASK]", f"[red]{predicted_token}[/red]"))
 
 
 

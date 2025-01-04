@@ -5,36 +5,16 @@ import mlx.nn as nn
 from pydantic import BaseModel
 
 from modern_bert_mlx.nn import ModuleList
-
-
-class ModernBertConfig(BaseModel):
-    # Embedding args
-    vocab_size: int = 50368
-    embed_dim: int = 768
-    pad_token_idx: int = 50283  # Not supported?
-    embed_drop_p: float = 0.0
-    # NN args
-    hidden_dim: int = 2304  # 768 * 3
-    intermediate_dim: int = 1152  # 2304 / 2
-    layer_norm_eps: float = 1e-5
-    norm_bias: bool = False
-    # Encoder Args
-    encoder_num_layers: int = 22
-    encoder_drop_p: float = 0.0
-    # Attention Args
-    num_attention_heads: int = 12
-    output_attn: bool = False
-    # Decoder Args
-    decoder_bias: bool = True
+from modern_bert_mlx.config import ModernBertConfig
 
 
 class ModernBertEmbedder(nn.Module):
     def __init__(self, config: ModernBertConfig):
         super().__init__()
         self.config = config
-        self.tok_embeddings = nn.Embedding(config.vocab_size, config.embed_dim)
+        self.tok_embeddings = nn.Embedding(config.vocab_size, config.hidden_dim)
         self.norm = nn.LayerNorm(
-            config.embed_dim,
+            config.hidden_dim,
             eps=config.layer_norm_eps,
             affine=True,
             bias=config.norm_bias,
@@ -51,10 +31,12 @@ class ModernBertMLP(nn.Module):
     def __init__(self, config: ModernBertConfig):
         super().__init__()
         self.config = config
-        self.Wi = nn.Linear(config.embed_dim, config.hidden_dim, bias=False)
+        self.Wi = nn.Linear(
+            config.hidden_dim, 2 * config.intermediate_dim, bias=config.mlp_bias
+        )
         self.act = nn.GELU()
-        self.drop = nn.Dropout(config.encoder_drop_p)
-        self.Wo = nn.Linear(config.intermediate_dim, config.embed_dim, bias=False)
+        self.drop = nn.Dropout(config.mlp_dropout)
+        self.Wo = nn.Linear(config.intermediate_dim, config.hidden_dim, bias=config.mlp_bias)
 
     def __call__(self, h: mx.array) -> mx.array:
         inp, gate = self.Wi(h).split(2, axis=-1)
@@ -68,9 +50,9 @@ class ModernBertAttention(nn.Module):
         self.config = config
         self.nheads = self.config.num_attention_heads
         self.head_dim = self.config.hidden_dim // self.config.num_attention_heads
-        self.Wqkv = nn.Linear(config.embed_dim, config.hidden_dim, bias=False)
+        self.Wqkv = nn.Linear(config.hidden_dim, config.hidden_dim, bias=False)
         self.rotary_emb = nn.RoPE(self.head_dim)
-        self.Wo = nn.Linear(config.embed_dim, config.embed_dim, bias=False)
+        self.Wo = nn.Linear(config.hidden_dim, config.hidden_dim, bias=False)
         self.drop = nn.Identity()
 
     def __call__(
@@ -123,7 +105,7 @@ class ModernBertEncoderLayer(nn.Module):
         self.config = config
         if has_attn_norm:
             self.attn_norm = nn.LayerNorm(
-                config.embed_dim,
+                config.hidden_dim,
                 config.layer_norm_eps,
                 affine=True,
                 bias=config.norm_bias,
@@ -132,7 +114,7 @@ class ModernBertEncoderLayer(nn.Module):
             self.attn_norm = nn.Identity()
         self.attn = ModernBertAttention(config)
         self.mlp_norm = nn.LayerNorm(
-            config.embed_dim,
+            config.hidden_dim,
             config.layer_norm_eps,
             affine=True,
             bias=config.norm_bias,
@@ -161,7 +143,7 @@ class ModernBertBackbone(nn.Module):
             ]
         )
         self.final_norm = nn.LayerNorm(
-            config.embed_dim,
+            config.hidden_dim,
             eps=config.layer_norm_eps,
             affine=True,
             bias=config.norm_bias,
@@ -184,10 +166,10 @@ class ModernBertBackbone(nn.Module):
 class ModernBertPredictionHead(nn.Module):
     def __init__(self, config: ModernBertConfig):
         super().__init__()
-        self.fc = nn.Linear(config.embed_dim, config.embed_dim, bias=False)
+        self.fc = nn.Linear(config.hidden_dim, config.hidden_dim, bias=False)
         self.act = nn.GELU()
         self.norm = nn.LayerNorm(
-            config.embed_dim,
+            config.hidden_dim,
             eps=config.layer_norm_eps,
             affine=True,
             bias=config.norm_bias,
@@ -207,7 +189,7 @@ class ModernBertBase(nn.Module):
         self.backbone = ModernBertBackbone(config)
         self.head = ModernBertPredictionHead(config)
         self.decoder = nn.Linear(
-            config.embed_dim, config.vocab_size, bias=config.decoder_bias
+            config.hidden_dim, config.vocab_size, bias=config.decoder_bias
         )
 
     def __call__(
