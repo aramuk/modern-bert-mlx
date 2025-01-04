@@ -20,6 +20,7 @@ pydantic = "^2.10.4"
 transformers = { path = "./transformers" }
 torch = "^2.0.0"
 safetensors = "^0.4.5"
+mlx-lm = "^0.20.6"
 
 [build-system]
 requires = ["poetry-core"]
