@@ -47,14 +47,14 @@ class ModernBertMLP(nn.Module):
 
 
 class RoPE(nn.Module):
-    def __init__(self, config: ModernBertConfig, is_global: bool = False):
+    def __init__(self, config: ModernBertConfig, use_local_attention: bool):
         super().__init__()
         self.config = config
         self.dim = config.hidden_dim // config.attention.num_attention_heads
         self.base = (
-            config.attention.global_rope_theta
-            if is_global
-            else config.attention.local_rope_theta
+            config.attention.local_rope_theta
+            if use_local_attention
+            else config.attention.global_rope_theta
         )
         self._inv_freq = 1.0 / (self.base ** (mx.arange(0, self.dim, 2) / self.dim))
         self._cached_cos: Optional[mx.array] = None
@@ -107,14 +107,24 @@ class RoPE(nn.Module):
 
 
 class ModernBertAttention(nn.Module):
-    def __init__(self, config: ModernBertConfig, is_global: bool = False):
+    def __init__(self, config: ModernBertConfig, layer_id: int):
         super().__init__()
         self.config = config
-        self.is_global = is_global
+        self.use_local_attention = (
+            layer_id % config.attention.global_attn_every_n_layers != 0
+        )
+        if self.use_local_attention:
+            self.local_attention = (
+                config.attention.local_attention // 2,
+                config.attention.local_attention // 2,
+            )
+        else:
+            self.local_attention = (-1, -1)
         self.nheads = self.config.attention.num_attention_heads
+        self.proj_dim = 3 * config.hidden_dim
         self.head_dim = self.config.hidden_dim // self.nheads
-        self.Wqkv = nn.Linear(config.hidden_dim, 3 * config.hidden_dim, bias=False)
-        self.rope = RoPE(config, self.is_global)
+        self.Wqkv = nn.Linear(config.hidden_dim, self.proj_dim, bias=False)
+        self.rope = RoPE(config, use_local_attention=self.use_local_attention)
         self.Wo = nn.Linear(config.hidden_dim, config.hidden_dim, bias=False)
         self.drop = nn.Identity()
 
@@ -124,41 +134,47 @@ class ModernBertAttention(nn.Module):
         mask: mx.array,
         position_ids: mx.array,
     ) -> Tuple[mx.array, mx.array]:
+        batch_size, seq_len, _ = h.shape
+        assert h.shape == (batch_size, seq_len, self.config.hidden_dim)
         qkv = self.Wqkv(h)
-
-        batch_size, seq_len, all_dims = qkv.shape
-
+        assert qkv.shape == (batch_size, seq_len, self.proj_dim)
         # Using reshape instead of view in MLX because of unified memory:
         #   https://github.com/ml-explore/mlx/discussions/1527
         # qkv: [batch_size, seq_len, 3, nheads,  head_dim]
         qkv = qkv.reshape(batch_size, seq_len, 3, self.nheads, -1)
-        # print(qkv.shape)
+        assert qkv.shape == (batch_size, seq_len, 3, self.nheads, self.head_dim)
+        # Q, K, V: [batch_size, seq_len, nheads,  head_dim]
         Q, K, V = map(
             lambda a: mx.squeeze(a, axis=2),
             qkv.transpose(0, 3, 2, 1, 4).split(3, axis=2),
         )
-
-        # [batch_size, nheads, seqlen]
+        assert all(
+            a.shape == (batch_size, self.nheads, seq_len, self.head_dim)
+            for a in (Q, K, V)
+        )
+        # [batch_size, nheads, seq_len, head_dim]
         Q_embed = self.rope(Q, position_ids=position_ids, dtype=Q.dtype)
         K_embed = self.rope(K, position_ids=position_ids, dtype=Q.dtype)
+        assert all(
+            a.shape == (batch_size, self.nheads, seq_len, self.head_dim)
+            for a in (Q_embed, K_embed, V)
+        )
 
         # TODO: select configured attention implementation dynamically
-        # TODO: Use SDPA instead of eager attention
         # TODO: sliding window attention
         # TODO: mask attn_out
-        head_dim = Q.shape[-1]
-        scale = head_dim**-0.5
-        attn_out = Q_embed @ K_embed.transpose(0, 1, 3, 2) * scale
-        # print(attn_out.shape)
-        attn_out = mx.softmax(attn_out, axis=-1) @ V
-        # print(attn_out.shape)
-        # attn_out = mx.fast.scaled_dot_product_attention(
-        #     Q_rot, K_rot, V, mask=mask, stream=mx.gpu
-        # )
-
+        # softmax((Q_embed @ K_embed).transpose(2, 3) * scale + mask) @ V + mask
+        attn_out = mx.fast.scaled_dot_product_attention(
+            Q_embed, K_embed, V, scale=self.head_dim**-0.5, mask=None, stream=mx.gpu
+        )
+        assert attn_out.shape == (batch_size, self.nheads, seq_len, self.head_dim)
         attn_out = attn_out.transpose(0, 2, 1, 3).reshape(batch_size, seq_len, -1)
+        assert attn_out.shape == (batch_size, seq_len, self.config.hidden_dim)
+
         h = attn_out[0]
+        assert h.shape == (seq_len, self.config.hidden_dim)
         h = self.drop(self.Wo(h))
+        assert h.shape == (seq_len, self.config.hidden_dim)
 
         return (h, attn_out[1:]) if self.config.attention.output_attn else (h,)
 
@@ -179,12 +195,7 @@ class ModernBertEncoderLayer(nn.Module):
             )
         else:
             self.attn_norm = nn.Identity()
-        self.attn = ModernBertAttention(
-            config,
-            is_global=(
-                self.layer_id % config.attention.global_attn_every_n_layers == 0
-            ),
-        )
+        self.attn = ModernBertAttention(config, layer_id=self.layer_id)
         self.mlp_norm = nn.LayerNorm(
             config.hidden_dim,
             config.layer_norm_eps,
