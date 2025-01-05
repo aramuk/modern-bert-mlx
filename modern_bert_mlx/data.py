@@ -24,15 +24,10 @@ def create_4d_attention_mask_for_sdpa(
     batch_size, seq_len = mask.shape
     target_len = target_len if target_len is not None else seq_len
 
-    # TODO: verify if mlx has JIT and if it can be tracked.
-    # is_tracing = torch.jit.is_tracing() or isinstance(mask, torch.fx.Proxy) or is_torchdynamo_compiling()
-    # is_tracing = False
-
-    # torch.jit.trace, symbolic_trace and torchdynamo with fullgraph=True are unable to capture data-dependent controlflows.
-    # if not is_tracing and mask.all():
-    #     return None
-
-    mask_exp = np.broadcast_to(mask, (batch_size, 1, target_len, seq_len)).astype(dtype)
+    mask_exp = mx.broadcast_to(
+        mask[:, None, :], shape=(batch_size, 1, target_len, seq_len)
+    ).astype(dtype)
     mask_inv = 1.0 - mask_exp
-    mask_inv[mask_inv.astype(np.bool)] = np.finfo(dtype).min
-    return mx.array(mask_inv)
+    # TODO: use mx.finfo once >0.21.1 drops
+    mask_inv = mx.where(mask_inv == 0.0, mask_inv, float(np.finfo(np.float32).min))
+    return mask_inv

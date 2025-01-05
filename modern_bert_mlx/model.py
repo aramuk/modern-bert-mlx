@@ -2,8 +2,10 @@ from typing import Optional, Tuple, Union
 
 import mlx.core as mx
 import mlx.nn as nn
+import numpy as np
 from pydantic import BaseModel
 
+from modern_bert_mlx.data import create_4d_attention_mask_for_sdpa
 from modern_bert_mlx.nn import ModuleList
 from modern_bert_mlx.config import ModernBertConfig
 
@@ -131,9 +133,14 @@ class ModernBertAttention(nn.Module):
     def __call__(
         self,
         h: mx.array,
-        mask: mx.array,
+        attention_mask: mx.array,
+        sliding_window_mask: mx.array,
         position_ids: mx.array,
     ) -> Tuple[mx.array, mx.array]:
+        # TODO: use local/sliding window attention where appropriate
+        if self.use_local_attention:
+            attention_mask = sliding_window_mask
+
         batch_size, seq_len, _ = h.shape
         assert h.shape == (batch_size, seq_len, self.config.hidden_dim)
         qkv = self.Wqkv(h)
@@ -165,7 +172,12 @@ class ModernBertAttention(nn.Module):
         # TODO: mask attn_out
         # softmax((Q_embed @ K_embed).transpose(2, 3) * scale + mask) @ V + mask
         attn_out = mx.fast.scaled_dot_product_attention(
-            Q_embed, K_embed, V, scale=self.head_dim**-0.5, mask=None, stream=mx.gpu
+            Q_embed,
+            K_embed,
+            V,
+            scale=self.head_dim**-0.5,
+            mask=attention_mask,
+            stream=mx.gpu,
         )
         assert attn_out.shape == (batch_size, self.nheads, seq_len, self.head_dim)
         attn_out = attn_out.transpose(0, 2, 1, 3).reshape(batch_size, seq_len, -1)
@@ -205,17 +217,24 @@ class ModernBertEncoderLayer(nn.Module):
         self.mlp = ModernBertMLP(config)
 
     def __call__(
-        self, h: mx.array, mask: mx.array, position_ids: Optional[mx.array] = None
+        self,
+        h: mx.array,
+        attention_mask: mx.array,
+        sliding_window_mask: mx.array,
+        position_ids: mx.array,
+        stream: mx.Stream,
     ) -> mx.array:
-        seq_len = h.shape[1]
-        if position_ids is None:
-            position_ids = mx.arange(seq_len).reshape(1, seq_len)
-        attn_out = self.attn(h, mask, position_ids)
+        attn_out = self.attn(
+            h,
+            attention_mask=attention_mask,
+            sliding_window_mask=sliding_window_mask,
+            position_ids=position_ids,
+        )
         attn_out = self.attn_norm(h + attn_out[0])
 
         mlp_out = self.mlp(attn_out)
         mlp_out = self.mlp_norm(attn_out)
-        return mlp_out, mask
+        return mlp_out, attention_mask
 
 
 class ModernBertBackbone(nn.Module):
@@ -240,13 +259,22 @@ class ModernBertBackbone(nn.Module):
     def __call__(
         self,
         input_ids: mx.array,
-        attention_mask: mx.array = None,
+        attention_mask: mx.array,
+        sliding_window_mask: mx.array,
+        position_ids: mx.array,
+        stream: mx.Stream,
     ) -> mx.array:
         embedding = self.embedder(input_ids)
 
         h = embedding
         for encoder_layer in self.encoder:
-            h, _ = encoder_layer(h, attention_mask)
+            h, _ = encoder_layer(
+                h,
+                attention_mask=attention_mask,
+                sliding_window_mask=sliding_window_mask,
+                position_ids=position_ids,
+                stream=stream,
+            )
         x = self.final_norm(h)
         return x
 
@@ -280,14 +308,62 @@ class ModernBertBase(nn.Module):
             config.hidden_dim, config.vocab_size, bias=config.decoder_bias
         )
 
+    def _update_attention_mask(
+        self, attention_mask: mx.array, stream: mx.Stream
+    ) -> mx.array:
+        global_attention_mask = create_4d_attention_mask_for_sdpa(
+            attention_mask, attention_mask.dtype
+        )
+
+        # Create position indices
+        rows = mx.arange(
+            global_attention_mask.shape[2], dtype=mx.uint16, stream=stream
+        )[None, :]
+        # Calculate distance between positions
+        distance = mx.abs(rows - rows.T)
+
+        # Create sliding window mask (1 for positions within window, 0 outside)
+        window_mask = (distance <= self.config.attention.local_attention // 2)[
+            None, None, :
+        ]
+        # Combine with existing mask
+        # TODO: switch to mx.finfo once available.
+        # print(window_mask.shape, window_mask.dtype)
+        # print(global_attention_mask.shape, global_attention_mask.dtype)
+        sliding_window_mask = mx.where(
+            mx.logical_not(window_mask), global_attention_mask, float(np.finfo(np.float32).min), stream=stream
+        )
+
+        return global_attention_mask, sliding_window_mask
+
     def __call__(
         self,
         input_ids: mx.array,
-        attention_mask: mx.array = None,
+        attention_mask: Optional[mx.array] = None,
+        sliding_window_mask: Optional[mx.array] = None,
+        position_ids: Optional[mx.array] = None,
+        stream: mx.Stream = mx.gpu,
     ) -> Tuple[mx.array, mx.array]:
-        # print(f"{input_ids.shape=}")
-        # print(f"{input_ids.shape=}, {attention_mask.shape=}")
-        x = self.backbone(input_ids, attention_mask)
+        batch_size, seq_len = input_ids.shape[:2]
+        if position_ids is None:
+            position_ids = mx.arange(seq_len, stream=stream).reshape(1, -1)
+
+        if attention_mask is None:
+            attention_mask = mx.ones(
+                (batch_size, seq_len), dtype=mx.uint16, stream=stream
+            )
+
+        attention_mask, sliding_window_mask = self._update_attention_mask(
+            attention_mask, stream
+        )
+
+        x = self.backbone(
+            input_ids,
+            attention_mask=attention_mask,
+            sliding_window_mask=sliding_window_mask,
+            position_ids=position_ids,
+            stream=stream,
+        )
         h = self.head(x)
         y = self.decoder(h)
         return y, h
