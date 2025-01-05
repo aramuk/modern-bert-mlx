@@ -1,5 +1,6 @@
 # Env files
 .env
+.vscode/
 
 # Data files
 logs/

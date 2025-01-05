@@ -21,30 +21,29 @@ def main():
     # print(inputs["attention_mask"].dtype)
     print(inputs)
 
-    print("ModernBertMLX says...")
-    config = ModernBertConfig()
-    model = ModernBertBase(config)
-    model.load_weights("modernbert-mlx.safetensors")
-    y, h = model(**inputs)
-    # print(y)
-
     def decode(logits):
         masked_index = inputs["input_ids"][0].tolist().index(tokenizer.mask_token_id)
         predicted_token_id = logits[0, masked_index].argmax(axis=-1)
         predicted_token = tokenizer.decode(predicted_token_id)
         return predicted_token
 
+    print("ModernBertMLX says...")
+    config = ModernBertConfig()
+    model = ModernBertBase(config)
+    model.load_weights("modernbert-mlx.safetensors")
+    y, h = model(**inputs)
+    print(y)
+
     predicted_token = decode(np.array(y))
     print(text.replace("[MASK]", f"[red]{predicted_token}[/red]"))
 
     # model = AutoModelForMaskedLM.from_pretrained(model_id)
+
     # inputs = tokenizer(text, return_tensors="pt")
     # print("ModernBert says...")
     # outputs = model(**inputs)
     # predicted_token = decode(outputs.logits)
     # print(text.replace("[MASK]", f"[red]{predicted_token}[/red]"))
-
-
 
 
 if __name__ == "__main__":

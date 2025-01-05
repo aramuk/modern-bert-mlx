@@ -17,6 +17,7 @@ class AttentionConfig(BaseModel):
 
 class ModernBertConfig(BaseModel):
     # Embedding args
+    context_length: int = 8192
     vocab_size: int = 50368
     hidden_dim: int = 768
     pad_token_idx: int = 50283  # Not supported?

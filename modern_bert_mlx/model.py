@@ -61,41 +61,49 @@ class RoPE(nn.Module):
         self._cached_sin: Optional[mx.array] = None
 
     def _compute_rot(self, position_ids: mx.array, dtype: mx.Dtype):
-        print(self._inv_freq.shape, position_ids.shape)
-        inv_freq = mx.broadcast_to(
-            self._inv_freq[:, None, None],
-            shape=(self._inv_freq.shape[0], position_ids.shape[1], 1),
-        ).astype(dtype)
-        position_ids = position_ids[:, :].astype(mx.float32)
-        print(f"{inv_freq.shape=}, {position_ids.shape=}")
-        rot = inv_freq @ position_ids
-        print(f"{rot.shape=}")
-        assert rot.shape == (
-            position_ids.shape,
-            self.dim // 2,
-            self.dim // 2,
-        ), f"rotation of shape [seq_len, head_dim, head_dim] has shape {rot.shape}"
-        print(f"{rot.shape=}")
+        # inv_freq ~ [32], position_ids ~ [1, 9]
+        seq_len = position_ids.shape[1]
+        assert self._inv_freq.shape == (32,)
+        assert position_ids.shape == (1, seq_len)
+
+        # inv_freq ~ [1, 32, 1]
+        inv_freq = self._inv_freq[None, :, None].astype(dtype)
+        assert inv_freq.shape == (1, 32, 1)
+
+        # position_ids ~ [1, 1, 9]
+        position_ids = position_ids[:, None].astype(mx.float32)
+        assert position_ids.shape == (1, 1, seq_len)
+
+        # rot ~ [1, 9, 32]
+        rot = (inv_freq @ position_ids).transpose(0, 2, 1)
+        assert rot.shape == (1, seq_len, 32)
+
+        # rot ~ [1, 9, 64]
         rot = mx.concatenate([rot, rot], axis=-1)
+        assert rot.shape == (1, 9, 64)
 
         self._cached_cos = rot.cos().astype(dtype)
         self._cached_sin = rot.sin().astype(dtype)
 
-    def __call__(self, x: mx.array, position_ids: mx.array, dtype: mx.Dtype):
-        if self._cached_cos is None or position_ids.shape[1] > cos.shape[1]:
-            self._compute_rot(position_ids, dtype)
-        cos, sin = self._cached_cos, self._cached_sin
-
-        print(f"{cos.shape=}, {sin.shape=}")
-        # cos = mx.expand_dims(cos, axis=-1)
-        # sin = mx.expand_dims(sin, axis=-1)
-        # print(f"{cos.shape=}, {sin.shape=}")
-        print(f"{x.shape=}")
+    def _rotate_half(self, x: mx.array) -> mx.array:
         mid = x.shape[-1] // 2
         x1 = x[..., :mid]
         x2 = x[..., mid:]
-        embed = mx.concatenate([x1 * cos - x2 * sin, x2 * cos + x1 * sin])
-        return embed
+        return mx.concatenate([-x2, x1], axis=-1)
+
+    def __call__(self, x: mx.array, position_ids: mx.array, dtype: mx.Dtype):
+        if (
+            self._cached_cos is None
+            or position_ids.shape[1] > self._cached_cos.shape[1]
+        ):
+            self._compute_rot(position_ids, dtype)
+
+        cos, sin = self._cached_cos[:, None, :, :], self._cached_sin[:, None, :, :]
+        assert cos.shape == sin.shape == (1, 1, position_ids.shape[1], 64)
+
+        x_embed = x * cos + self._rotate_half(x) * sin
+        assert x_embed.shape == x.shape
+        return x_embed
 
 
 class ModernBertAttention(nn.Module):
@@ -117,22 +125,12 @@ class ModernBertAttention(nn.Module):
         position_ids: mx.array,
     ) -> Tuple[mx.array, mx.array]:
         qkv = self.Wqkv(h)
-        print(qkv.shape)
+
         batch_size, seq_len, all_dims = qkv.shape
-        print([batch_size, seq_len, 3, self.nheads, self.head_dim])
-        # RoPE
-        # cos, sin = get_rope(
-        #     position_ids=position_ids,
-        #     dim=self.head_dim,
-        #     base=(
-        #         self.config.attention.global_rope_theta
-        #         if self.is_global
-        #         else self.config.attention.local_rope_theta
-        #     ),
-        #     dtype=qkv.dtype,
-        # )
-        # [batch_size, seq_len, 3, nheads,  head_dim]
-        # See: https://github.com/ml-explore/mlx/discussions/1527
+
+        # Using reshape instead of view in MLX because of unified memory:
+        #   https://github.com/ml-explore/mlx/discussions/1527
+        # qkv: [batch_size, seq_len, 3, nheads,  head_dim]
         qkv = qkv.reshape(batch_size, seq_len, 3, self.nheads, -1)
         # print(qkv.shape)
         Q, K, V = map(
@@ -140,24 +138,20 @@ class ModernBertAttention(nn.Module):
             qkv.transpose(0, 3, 2, 1, 4).split(3, axis=2),
         )
 
-        # TODO: use same rotation for Q, K
-        # TODO: verify the dimension is correct
         # [batch_size, nheads, seqlen]
         Q_embed = self.rope(Q, position_ids=position_ids, dtype=Q.dtype)
         K_embed = self.rope(K, position_ids=position_ids, dtype=Q.dtype)
 
         # TODO: select configured attention implementation dynamically
-        # print(Q_rot.shape, K_rot.shape, V.shape, mask.shape)
-        # print(Q_rot.shape, K_rot.shape, V.shape)
         # TODO: Use SDPA instead of eager attention
         # TODO: sliding window attention
         # TODO: mask attn_out
         head_dim = Q.shape[-1]
         scale = head_dim**-0.5
         attn_out = Q_embed @ K_embed.transpose(0, 1, 3, 2) * scale
-        print(attn_out.shape)
+        # print(attn_out.shape)
         attn_out = mx.softmax(attn_out, axis=-1) @ V
-        print(attn_out.shape)
+        # print(attn_out.shape)
         # attn_out = mx.fast.scaled_dot_product_attention(
         #     Q_rot, K_rot, V, mask=mask, stream=mx.gpu
         # )
@@ -175,6 +169,7 @@ class ModernBertEncoderLayer(nn.Module):
     ):
         super().__init__()
         self.config = config
+        self.layer_id = layer_id
         if has_attn_norm:
             self.attn_norm = nn.LayerNorm(
                 config.hidden_dim,
@@ -184,7 +179,12 @@ class ModernBertEncoderLayer(nn.Module):
             )
         else:
             self.attn_norm = nn.Identity()
-        self.attn = ModernBertAttention(config)
+        self.attn = ModernBertAttention(
+            config,
+            is_global=(
+                self.layer_id % config.attention.global_attn_every_n_layers == 0
+            ),
+        )
         self.mlp_norm = nn.LayerNorm(
             config.hidden_dim,
             config.layer_norm_eps,
@@ -213,10 +213,10 @@ class ModernBertBackbone(nn.Module):
         self.config = config
         self.embedder = ModernBertEmbedder(config)
         self.encoder = ModuleList(
-            [ModernBertEncoderLayer(config, has_attn_norm=False)]
+            [ModernBertEncoderLayer(config, has_attn_norm=False, layer_id=0)]
             + [
-                ModernBertEncoderLayer(config)
-                for _ in range(1, config.encoder_num_layers)
+                ModernBertEncoderLayer(config, layer_id=i)
+                for i in range(1, config.encoder_num_layers)
             ]
         )
         self.final_norm = nn.LayerNorm(
