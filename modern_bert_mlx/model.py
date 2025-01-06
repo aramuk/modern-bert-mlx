@@ -136,6 +136,7 @@ class ModernBertAttention(nn.Module):
         attention_mask: mx.array,
         sliding_window_mask: mx.array,
         position_ids: mx.array,
+        stream: mx.Stream,
     ) -> Tuple[mx.array, mx.array]:
         # TODO: use local/sliding window attention where appropriate
         if self.use_local_attention:
@@ -168,8 +169,6 @@ class ModernBertAttention(nn.Module):
         )
 
         # TODO: select configured attention implementation dynamically
-        # TODO: sliding window attention
-        # TODO: mask attn_out
         # softmax((Q_embed @ K_embed).transpose(2, 3) * scale + mask) @ V + mask
         attn_out = mx.fast.scaled_dot_product_attention(
             Q_embed,
@@ -177,7 +176,7 @@ class ModernBertAttention(nn.Module):
             V,
             scale=self.head_dim**-0.5,
             mask=attention_mask,
-            stream=mx.gpu,
+            stream=stream,
         )
         assert attn_out.shape == (batch_size, self.nheads, seq_len, self.head_dim)
         attn_out = attn_out.transpose(0, 2, 1, 3).reshape(batch_size, seq_len, -1)
@@ -229,6 +228,7 @@ class ModernBertEncoderLayer(nn.Module):
             attention_mask=attention_mask,
             sliding_window_mask=sliding_window_mask,
             position_ids=position_ids,
+            stream=stream,
         )
         attn_out = self.attn_norm(h + attn_out[0])
 
@@ -267,16 +267,27 @@ class ModernBertBackbone(nn.Module):
         embedding = self.embedder(input_ids)
 
         h = embedding
+        all_hidden_states = tuple()
+        all_self_attentions = tuple()
         for encoder_layer in self.encoder:
-            h, _ = encoder_layer(
+            h, attn = encoder_layer(
                 h,
                 attention_mask=attention_mask,
                 sliding_window_mask=sliding_window_mask,
                 position_ids=position_ids,
                 stream=stream,
             )
+            all_hidden_states += (h,)
+            all_self_attentions += (attn,)
         x = self.final_norm(h)
-        return x
+
+        # TODO: conditionally pad output
+
+        return {
+            "last_hidden_state": x,
+            "hidden_states": mx.array(all_hidden_states),
+            "attentions": mx.array(all_self_attentions),
+        }
 
 
 class ModernBertPredictionHead(nn.Module):
@@ -331,7 +342,10 @@ class ModernBertBase(nn.Module):
         # print(window_mask.shape, window_mask.dtype)
         # print(global_attention_mask.shape, global_attention_mask.dtype)
         sliding_window_mask = mx.where(
-            mx.logical_not(window_mask), global_attention_mask, float(np.finfo(np.float32).min), stream=stream
+            mx.logical_not(window_mask),
+            global_attention_mask,
+            float(np.finfo(np.float32).min),
+            stream=stream,
         )
 
         return global_attention_mask, sliding_window_mask
@@ -357,13 +371,16 @@ class ModernBertBase(nn.Module):
             attention_mask, stream
         )
 
-        x = self.backbone(
+        outputs = self.backbone(
             input_ids,
             attention_mask=attention_mask,
             sliding_window_mask=sliding_window_mask,
             position_ids=position_ids,
             stream=stream,
         )
+        mx.save_safetensors("logs/modernbert_mlx/backbone-out.safetensors", outputs)
+        
+        x = outputs["last_hidden_state"]
         h = self.head(x)
         y = self.decoder(h)
         return y, h
