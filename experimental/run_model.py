@@ -31,13 +31,17 @@ def main():
     config = ModernBertConfig()
     model = ModernBertBase(config)
     model.load_weights("modernbert-mlx.safetensors")
-    y, h = model(**inputs)
-    print(y)
+    model.eval()
+    with mx.stream(mx.gpu) as s:
+        y, h = model(**inputs, stream=s)
+    print(y.abs().sum())
 
     predicted_token = decode(np.array(y))
     print(text.replace("[MASK]", f"[red]{predicted_token}[/red]"))
 
     model = AutoModelForMaskedLM.from_pretrained(model_id)
+    model.config.output_hidden_states = True
+    model.config.output_attentions = True
 
     inputs = tokenizer(text, return_tensors="pt")
     print("ModernBert says...")

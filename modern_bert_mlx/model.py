@@ -127,6 +127,7 @@ class ModernBertAttention(nn.Module):
         self.head_dim = self.config.hidden_dim // self.nheads
         self.Wqkv = nn.Linear(config.hidden_dim, self.proj_dim, bias=False)
         self.rope = RoPE(config, use_local_attention=self.use_local_attention)
+        self.attn_drop = nn.Dropout(p=self.config.attention.attention_dropout)
         self.Wo = nn.Linear(config.hidden_dim, config.hidden_dim, bias=False)
         self.drop = nn.Identity()
 
@@ -169,15 +170,23 @@ class ModernBertAttention(nn.Module):
         )
 
         # TODO: select configured attention implementation dynamically
-        # softmax((Q_embed @ K_embed).transpose(2, 3) * scale + mask) @ V + mask
-        attn_out = mx.fast.scaled_dot_product_attention(
-            Q_embed,
-            K_embed,
-            V,
-            scale=self.head_dim**-0.5,
-            mask=attention_mask,
-            stream=stream,
-        )
+        if self.config.attention.output_attn:
+            # softmax((Q_embed @ K_embed.transpose(2, 3)) * scale + mask) @ V
+            scale = self.head_dim**-0.5
+            attn_weights = (Q_embed @ K_embed.transpose(0, 1, 3, 2)) * scale
+            attn_weights = mx.softmax(attn_weights + attention_mask, stream=stream)
+            if self.training:
+                attn_weights = self.attn_drop(attn_weights)
+            attn_out = attn_weights @ V
+        else:
+            attn_out = mx.fast.scaled_dot_product_attention(
+                Q_embed,
+                K_embed,
+                V,
+                scale=self.head_dim**-0.5,
+                mask=attention_mask,
+                stream=stream,
+            )
         assert attn_out.shape == (batch_size, self.nheads, seq_len, self.head_dim)
         attn_out = attn_out.transpose(0, 2, 1, 3).reshape(batch_size, seq_len, -1)
         assert attn_out.shape == (batch_size, seq_len, self.config.hidden_dim)
@@ -187,7 +196,7 @@ class ModernBertAttention(nn.Module):
         h = self.drop(self.Wo(h))
         assert h.shape == (seq_len, self.config.hidden_dim)
 
-        return (h, attn_out[1:]) if self.config.attention.output_attn else (h,)
+        return (h, attn_weights) if self.config.attention.output_attn else (h, None)
 
 
 class ModernBertEncoderLayer(nn.Module):
@@ -223,18 +232,18 @@ class ModernBertEncoderLayer(nn.Module):
         position_ids: mx.array,
         stream: mx.Stream,
     ) -> mx.array:
-        attn_out = self.attn(
-            h,
+        attn_out, attn = self.attn(
+            self.attn_norm(h),
             attention_mask=attention_mask,
             sliding_window_mask=sliding_window_mask,
             position_ids=position_ids,
             stream=stream,
         )
-        attn_out = self.attn_norm(h + attn_out[0])
+        h = h + attn_out
 
-        mlp_out = self.mlp(attn_out)
-        mlp_out = self.mlp_norm(attn_out)
-        return mlp_out, attention_mask
+        mlp_out = self.mlp(self.mlp_norm(h))
+        h = h + mlp_out
+        return h, attn
 
 
 class ModernBertBackbone(nn.Module):
@@ -265,9 +274,12 @@ class ModernBertBackbone(nn.Module):
         stream: mx.Stream,
     ) -> mx.array:
         embedding = self.embedder(input_ids)
+        mx.save_safetensors(
+            "logs/modernbert_mlx/embeddings.safetensors", {"embeddings": embedding}
+        )
 
         h = embedding
-        all_hidden_states = tuple()
+        all_hidden_states = (h,)
         all_self_attentions = tuple()
         for encoder_layer in self.encoder:
             h, attn = encoder_layer(
@@ -281,8 +293,8 @@ class ModernBertBackbone(nn.Module):
             all_self_attentions += (attn,)
         x = self.final_norm(h)
 
+        # print(*(a.shape for a in all_self_attentions))
         # TODO: conditionally pad output
-
         return {
             "last_hidden_state": x,
             "hidden_states": mx.array(all_hidden_states),
@@ -379,7 +391,7 @@ class ModernBertBase(nn.Module):
             stream=stream,
         )
         mx.save_safetensors("logs/modernbert_mlx/backbone-out.safetensors", outputs)
-        
+
         x = outputs["last_hidden_state"]
         h = self.head(x)
         y = self.decoder(h)
