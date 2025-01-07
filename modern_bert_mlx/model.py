@@ -115,6 +115,7 @@ class ModernBertAttention(nn.Module):
         self.use_local_attention = (
             layer_id % config.attention.global_attn_every_n_layers != 0
         )
+
         if self.use_local_attention:
             self.local_attention = (
                 config.attention.local_attention // 2,
@@ -129,7 +130,11 @@ class ModernBertAttention(nn.Module):
         self.rope = RoPE(config, use_local_attention=self.use_local_attention)
         self.attn_drop = nn.Dropout(p=self.config.attention.attention_dropout)
         self.Wo = nn.Linear(config.hidden_dim, config.hidden_dim, bias=False)
-        self.drop = nn.Identity()
+        self.mlp_drop = (
+            nn.Dropout(config.attention.attention_dropout)
+            if config.attention.attention_dropout > 0.0
+            else nn.Identity()
+        )
 
     def __call__(
         self,
@@ -150,7 +155,7 @@ class ModernBertAttention(nn.Module):
         # Using reshape instead of view in MLX because of unified memory:
         #   https://github.com/ml-explore/mlx/discussions/1527
         # qkv: [batch_size, seq_len, 3, nheads,  head_dim]
-        qkv = qkv.reshape(batch_size, seq_len, 3, self.nheads, -1)
+        qkv = qkv.reshape(batch_size, seq_len, 3, self.nheads, self.head_dim)
         assert qkv.shape == (batch_size, seq_len, 3, self.nheads, self.head_dim)
         # Q, K, V: [batch_size, seq_len, nheads,  head_dim]
         Q, K, V = map(
@@ -193,20 +198,18 @@ class ModernBertAttention(nn.Module):
 
         h = attn_out[0]
         assert h.shape == (seq_len, self.config.hidden_dim)
-        h = self.drop(self.Wo(h))
+        h = self.mlp_drop(self.Wo(h))
         assert h.shape == (seq_len, self.config.hidden_dim)
 
         return (h, attn_weights) if self.config.attention.output_attn else (h, None)
 
 
 class ModernBertEncoderLayer(nn.Module):
-    def __init__(
-        self, config: ModernBertConfig, layer_id: int = 0, has_attn_norm: bool = True
-    ):
+    def __init__(self, config: ModernBertConfig, layer_id: int = 0):
         super().__init__()
         self.config = config
         self.layer_id = layer_id
-        if has_attn_norm:
+        if self.layer_id != 0:
             self.attn_norm = nn.LayerNorm(
                 config.hidden_dim,
                 config.layer_norm_eps,
@@ -232,7 +235,7 @@ class ModernBertEncoderLayer(nn.Module):
         position_ids: mx.array,
         stream: mx.Stream,
     ) -> mx.array:
-        attn_out, attn = self.attn(
+        attn_out, attn_maps = self.attn(
             self.attn_norm(h),
             attention_mask=attention_mask,
             sliding_window_mask=sliding_window_mask,
@@ -243,7 +246,7 @@ class ModernBertEncoderLayer(nn.Module):
 
         mlp_out = self.mlp(self.mlp_norm(h))
         h = h + mlp_out
-        return h, attn
+        return h, attn_maps
 
 
 class ModernBertBackbone(nn.Module):
@@ -252,7 +255,7 @@ class ModernBertBackbone(nn.Module):
         self.config = config
         self.embedder = ModernBertEmbedder(config)
         self.encoder = ModuleList(
-            [ModernBertEncoderLayer(config, has_attn_norm=False, layer_id=0)]
+            [ModernBertEncoderLayer(config, layer_id=0)]
             + [
                 ModernBertEncoderLayer(config, layer_id=i)
                 for i in range(1, config.encoder_num_layers)
@@ -340,8 +343,8 @@ class ModernBertBase(nn.Module):
 
         # Create position indices
         rows = mx.arange(
-            global_attention_mask.shape[2], dtype=mx.uint16, stream=stream
-        )[None, :]
+            global_attention_mask.shape[2], dtype=mx.int32, stream=stream
+        ).reshape(-1, global_attention_mask.shape[2])
         # Calculate distance between positions
         distance = mx.abs(rows - rows.T)
 
@@ -356,9 +359,10 @@ class ModernBertBase(nn.Module):
         sliding_window_mask = mx.where(
             mx.logical_not(window_mask),
             global_attention_mask,
-            float(np.finfo(np.float32).min),
+            0.0,
+            # float(np.finfo(np.float32).min),
             stream=stream,
-        )
+        ).astype(global_attention_mask.dtype)
 
         return global_attention_mask, sliding_window_mask
 
@@ -381,6 +385,13 @@ class ModernBertBase(nn.Module):
 
         attention_mask, sliding_window_mask = self._update_attention_mask(
             attention_mask, stream
+        )
+        mx.save_safetensors(
+            "logs/modernbert_mlx/masks.safetensors",
+            {
+                "attention_mask": attention_mask,
+                "sliding_window_mask": sliding_window_mask,
+            },
         )
 
         outputs = self.backbone(
