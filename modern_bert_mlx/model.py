@@ -1,13 +1,11 @@
-from typing import Optional, Tuple, Union
+from typing import Optional, Tuple
 
 import mlx.core as mx
 import mlx.nn as nn
-import numpy as np
-from pydantic import BaseModel
 
 from modern_bert_mlx.data import create_4d_attention_mask_for_sdpa
 from modern_bert_mlx.nn import ModuleList
-from modern_bert_mlx.config import ModernBertConfig
+from modern_bert_mlx.config import ModernBertConfig, AttentionImpl
 
 
 class ModernBertEmbedder(nn.Module):
@@ -136,6 +134,22 @@ class ModernBertAttention(nn.Module):
             else nn.Identity()
         )
 
+    @staticmethod
+    def naive_attention(
+        Q: mx.array,
+        K: mx.array,
+        V: mx.array,
+        mask: mx.array,
+        scale: mx.array,
+        dropout: nn.Module,
+        stream: Optional[mx.Stream] = None,
+    ) -> Tuple[mx.array, mx.array]:
+        attn_weights = (Q @ K.transpose(0, 1, 3, 2)) * scale
+        attn_weights = mx.softmax(attn_weights + mask, axis=-1, stream=stream)
+        attn_weights = dropout(attn_weights)
+        attn_out = attn_weights @ V
+        return attn_out, attn_weights
+
     def __call__(
         self,
         h: mx.array,
@@ -173,25 +187,39 @@ class ModernBertAttention(nn.Module):
             a.shape == (batch_size, self.nheads, seq_len, self.head_dim)
             for a in (Q_embed, K_embed, V)
         )
+        scale = self.head_dim**-0.5
 
-        # TODO: select configured attention implementation dynamically
-        if self.config.attention.output_attn:
-            # softmax((Q_embed @ K_embed.transpose(2, 3)) * scale + mask) @ V
-            scale = self.head_dim**-0.5
-            attn_weights = (Q_embed @ K_embed.transpose(0, 1, 3, 2)) * scale
-            attn_weights = mx.softmax(attn_weights + attention_mask, axis=-1, stream=stream)
-            if self.training:
-                attn_weights = self.attn_drop(attn_weights)
-            attn_out = attn_weights @ V
-        else:
-            attn_out = mx.fast.scaled_dot_product_attention(
-                Q_embed,
-                K_embed,
-                V,
-                scale=self.head_dim**-0.5,
-                mask=attention_mask,
-                stream=stream,
+        if (
+            self.config.attention.output_attn
+            and self.config.attention.implementation != AttentionImpl.naive
+        ):
+            print(
+                "Warning: attention maps are only output when using implementation = 'naive'. Defaulting to 'naive'"
             )
+            self.config.attention.implementation = AttentionImpl.naive
+
+        match self.config.attention.implementation:
+            case AttentionImpl.naive:
+                attn_out, attn_weights = self.naive_attention(
+                    Q=Q_embed,
+                    K=K_embed,
+                    V=V,
+                    mask=attention_mask,
+                    scale=scale,
+                    dropout=self.attn_drop,
+                    stream=stream,
+                )
+            case AttentionImpl.sdpa | _:
+                attn_out = mx.fast.scaled_dot_product_attention(
+                    Q_embed,
+                    K_embed,
+                    V,
+                    scale=self.head_dim**-0.5,
+                    mask=attention_mask,
+                    stream=stream,
+                )
+                attn_weights = None
+
         assert attn_out.shape == (batch_size, self.nheads, seq_len, self.head_dim)
         attn_out = attn_out.transpose(0, 2, 1, 3).reshape(batch_size, seq_len, -1)
         assert attn_out.shape == (batch_size, seq_len, self.config.hidden_dim)
@@ -301,7 +329,9 @@ class ModernBertBackbone(nn.Module):
         return {
             "last_hidden_state": x,
             "hidden_states": mx.array(all_hidden_states),
-            "attentions": mx.array(all_self_attentions),
+            "attentions": mx.array(
+                all_self_attentions if self.config.attention.output_attn else [mx.nan],
+            )
         }
 
 

@@ -13,6 +13,7 @@ def abs_diff(A: mx.array, B: mx.array) -> mx.array:
 TORCH_SAVEDIR = Path("logs/modernbert_torch")
 MLX_SAVEDIR = Path("logs/modernbert_mlx")
 
+
 def compare_attn():
     Q, K, V = mx.random.normal((3, 1, 12, 9, 64))
     mask = mx.zeros((1, 9, 9))
@@ -26,9 +27,8 @@ def compare_attn():
         q=Q, k=K, v=V, scale=scale, mask=mask
     )
 
-    print(eager_out.shape, sdpa_out.shape)
-
     print(f"diff in attention implementations: {abs_diff(eager_out, sdpa_out)}")
+
 
 def compare(filename: str, keys: List[str]):
     torch_outs = mx.load(str(TORCH_SAVEDIR / f"{filename}.safetensors"))
@@ -42,40 +42,6 @@ def compare(filename: str, keys: List[str]):
         ), f"tensor_torch['{key}'] {tensor_torch.shape} does not match shape of  tensor_mlx['{key}'] {tensor_mlx.shape}"
 
         print(f"Difference in `{key}`: {abs_diff(tensor_torch, tensor_mlx).item():.9f}")
-
-        # if key == "sliding_window_mask":
-        #     print(tensor_torch.min(), tensor_torch.mean(), tensor_torch.max())
-        #     # print(tensor_torch)
-
-        #     print(tensor_mlx.min(), tensor_mlx.mean(), tensor_mlx.max())
-        #     # print(tensor_mlx)
-
-        #     global_attention_mask = mlx_outs["attention_mask"]
-        #     # print(global_attention_mask.dtype)
-        #     # Create position indices
-        #     rows = mx.arange(
-        #         global_attention_mask.shape[2],
-        #         dtype=mx.int32,
-        #     )[None, :]
-        #     # Calculate distance between positions
-        #     distance = mx.abs(rows - rows.T)
-        #     # print(distance)
-        #     # Create sliding window mask (1 for positions within window, 0 outside)
-        #     window_mask = (distance <= 128 // 2)[None, None, :]
-        #     # print(window_mask)
-        #     # Combine with existing mask
-        #     # TODO: switch to mx.finfo once available.
-        #     # print(window_mask.shape, window_mask.dtype)
-        #     # print(global_attention_mask.shape, global_attention_mask.dtype)
-        #     sliding_window_mask = mx.where(
-        #         mx.logical_not(window_mask),
-        #         global_attention_mask,
-        #         0,
-        #         # float(np.finfo(np.float32).min),
-        #     )
-        #     # print(sliding_window_mask)
-
-        #     print(abs_diff(tensor_torch, sliding_window_mask))
 
 
 def display_hidden_states(out_torch: mx.array, out_mlx: mx.array):
@@ -111,6 +77,7 @@ def display_attentions(out_torch: mx.array, out_mlx: mx.array):
 
 
 def main():
+    compare_attn()
     compare("embeddings", ["embeddings"])
     compare("masks", ["attention_mask", "sliding_window_mask"])
 
@@ -120,30 +87,20 @@ def main():
     for key in reversed(("last_hidden_state", "hidden_states", "attentions")):
         print(f"Comparing `{key}`...")
         if key.endswith("s"):
+            if mx.isnan(mlx_outs[key]).all():
+                continue
             for i, (out_torch, out_mlx) in enumerate(
                 zip(torch_outs[key], mlx_outs[key])
             ):
-                # print(
-                #     out_torch.shape, out_torch.min(), out_torch.mean(), out_torch.max()
-                # )
-                # print(out_mlx.shape, out_mlx.min(), out_mlx.mean(), out_mlx.max())
-                # if key == "attentions":
-                #     display_attentions(out_torch, out_mlx)
-                # elif key == "hidden_states":
-                #     display_hidden_states(out_torch, out_mlx)
-
-                diff = abs_diff(out_torch, out_mlx)
+                assert (
+                    diff := abs_diff(out_torch, out_mlx)
+                ) <= 0.1, f"Layer {i}: `{key}` not equal {diff:.4f}"
                 print(f"Layer {i}, `{key}`: diff = {diff:.9f}")
-                # assert (
-                #     diff := abs_diff(out_torch, out_mlx)
-                # ) <= 0.1, f"Layer {i}: `{key}` not equal {diff:.4f}"
         else:
-            # print(torch_outs[key].shape, torch_outs[key].mean())
-            # print(mlx_outs[key].shape, mlx_outs[key].mean())
+            assert (
+                diff := abs_diff(torch_outs[key], mlx_outs[key])
+            ) <= 0.1, f"{key}: tensors not equal {diff:.4f}"
             print(f"`{key}`: diff = {diff:.9f}")
-            # assert (
-            #     diff := abs_diff(torch_outs[key], mlx_outs[key])
-            # ) <= 0.1, f"{key}: tensors not equal {diff:.4f}"
 
 
 if __name__ == "__main__":

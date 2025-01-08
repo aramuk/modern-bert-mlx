@@ -37,18 +37,18 @@ def main():
     print(y.abs().sum())
 
     predicted_token = decode(np.array(y))
-    print(text.replace("[MASK]", f"[red]{predicted_token}[/red]"))
+    print(text.replace(" [MASK]", f"[red]{predicted_token}[/red]"))
 
     model = AutoModelForMaskedLM.from_pretrained(model_id)
     model.config.output_hidden_states = True
-    model.config.output_attentions = True
+    model.config.output_attentions = False
 
     inputs = tokenizer(text, return_tensors="pt")
     print("ModernBert says...")
     outputs = model(**inputs)
     print(mx.mean((outputs.logits - y) ** 2))
     predicted_token = decode(outputs.logits)
-    print(text.replace("[MASK]", f"[red]{predicted_token}[/red]"))
+    print(text.replace(" [MASK]", f"[red]{predicted_token}[/red]"))
 
 
 if __name__ == "__main__":

@@ -1,9 +1,16 @@
-from typing import Tuple
+from enum import Enum
 
 from pydantic import BaseModel, Field
 
 
+class AttentionImpl(str, Enum):
+    naive = "naive"
+    sdpa = "sdpa"
+    flash = "flash"
+
+
 class AttentionConfig(BaseModel):
+    implementation: AttentionImpl = AttentionImpl.sdpa
     num_attention_heads: int = 12
     attention_bias: bool = False
     attention_dropout: float = 0.0
@@ -12,7 +19,7 @@ class AttentionConfig(BaseModel):
     local_attention: int = 128
     local_rope_theta: int = 10000.0
     rope_max_pos_embeddings: int = 2048
-    output_attn: bool = True
+    output_attn: bool = False
 
 
 class ModernBertConfig(BaseModel):
