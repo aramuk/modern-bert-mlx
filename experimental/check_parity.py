@@ -13,6 +13,22 @@ def abs_diff(A: mx.array, B: mx.array) -> mx.array:
 TORCH_SAVEDIR = Path("logs/modernbert_torch")
 MLX_SAVEDIR = Path("logs/modernbert_mlx")
 
+def compare_attn():
+    Q, K, V = mx.random.normal((3, 1, 12, 9, 64))
+    mask = mx.zeros((1, 9, 9))
+
+    scale = 64**-0.5
+    attn_weights = (Q @ K.transpose(0, 1, 3, 2)) * scale
+    attn_weights = mx.softmax(attn_weights + mask)
+    eager_out = attn_weights @ V
+
+    sdpa_out = mx.fast.scaled_dot_product_attention(
+        q=Q, k=K, v=V, scale=scale, mask=mask
+    )
+
+    print(eager_out.shape, sdpa_out.shape)
+
+    print(f"diff in attention implementations: {abs_diff(eager_out, sdpa_out)}")
 
 def compare(filename: str, keys: List[str]):
     torch_outs = mx.load(str(TORCH_SAVEDIR / f"{filename}.safetensors"))
@@ -95,6 +111,8 @@ def display_attentions(out_torch: mx.array, out_mlx: mx.array):
 
 
 def main():
+    compare_attn()
+    return
     compare("embeddings", ["embeddings"])
     compare("masks", ["attention_mask", "sliding_window_mask"])
 

@@ -301,7 +301,7 @@ class ModernBertBackbone(nn.Module):
         return {
             "last_hidden_state": x,
             "hidden_states": mx.array(all_hidden_states),
-            "attentions": mx.array(all_self_attentions),
+            # "attentions": mx.array(all_self_attentions),
         }
 
 
