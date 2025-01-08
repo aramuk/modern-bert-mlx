@@ -19,7 +19,7 @@ def compare_attn():
 
     scale = 64**-0.5
     attn_weights = (Q @ K.transpose(0, 1, 3, 2)) * scale
-    attn_weights = mx.softmax(attn_weights + mask)
+    attn_weights = mx.softmax(attn_weights + mask, axis=-1)
     eager_out = attn_weights @ V
 
     sdpa_out = mx.fast.scaled_dot_product_attention(
@@ -111,8 +111,6 @@ def display_attentions(out_torch: mx.array, out_mlx: mx.array):
 
 
 def main():
-    compare_attn()
-    return
     compare("embeddings", ["embeddings"])
     compare("masks", ["attention_mask", "sliding_window_mask"])
 

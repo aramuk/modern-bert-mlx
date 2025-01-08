@@ -179,7 +179,7 @@ class ModernBertAttention(nn.Module):
             # softmax((Q_embed @ K_embed.transpose(2, 3)) * scale + mask) @ V
             scale = self.head_dim**-0.5
             attn_weights = (Q_embed @ K_embed.transpose(0, 1, 3, 2)) * scale
-            attn_weights = mx.softmax(attn_weights + attention_mask, stream=stream)
+            attn_weights = mx.softmax(attn_weights + attention_mask, axis=-1, stream=stream)
             if self.training:
                 attn_weights = self.attn_drop(attn_weights)
             attn_out = attn_weights @ V
@@ -301,7 +301,7 @@ class ModernBertBackbone(nn.Module):
         return {
             "last_hidden_state": x,
             "hidden_states": mx.array(all_hidden_states),
-            # "attentions": mx.array(all_self_attentions),
+            "attentions": mx.array(all_self_attentions),
         }
 
 
