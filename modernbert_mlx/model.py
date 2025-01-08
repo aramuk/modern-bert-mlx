@@ -3,9 +3,9 @@ from typing import Optional, Tuple
 import mlx.core as mx
 import mlx.nn as nn
 
-from modern_bert_mlx.data import create_4d_attention_mask_for_sdpa
-from modern_bert_mlx.nn import ModuleList
-from modern_bert_mlx.config import ModernBertConfig, AttentionImpl
+from modernbert_mlx.data import create_4d_attention_mask_for_sdpa
+from modernbert_mlx.nn import ModuleList
+from modernbert_mlx.config import ModernBertConfig, AttentionImpl
 
 
 class ModernBertEmbedder(nn.Module):
