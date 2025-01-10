@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 
 
 def abs_diff(A: mx.array, B: mx.array) -> mx.array:
-    return (A - B).abs().sum()
+    return (A - B).abs().mean()
 
 
 TORCH_SAVEDIR = Path("logs/modernbert_torch")
@@ -69,6 +69,8 @@ def compare_embeddings():
     cbar_ax = fig.add_axes([0.9, 0.2, 0.025, 0.7])
     fig.colorbar(im, cax=cbar_ax)
     plt.show()
+    # for i, (mlx_i, torch_i) in enumerate(zip(mlx_emb.flatten(), torch_emb.flatten())):
+    #     assert abs(mlx_i - torch_i) < 1e-7, f"{i}: {mlx_i} ({mlx_i.item()}) - {torch_i} ({torch_i.item()}) = {mlx_i - torch_i}"
 
 
 def display_hidden_states(out_torch: mx.array, out_mlx: mx.array):

@@ -23,7 +23,10 @@ class ModernBertEmbedder(nn.Module):
 
     def __call__(self, input_ids: mx.array) -> mx.array:
         # TODO: Conditionally run JIT implementation based on self.config.
+        print(input_ids.dtype)
         h = self.drop(self.norm(self.tok_embeddings(input_ids)))
+        print(h.shape)
+        print(h.dtype, h[0,0,0].item())
         return h
 
 
