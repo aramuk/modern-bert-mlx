@@ -158,7 +158,6 @@ class ModernBertAttention(nn.Module):
         position_ids: mx.array,
         stream: mx.Stream,
     ) -> Tuple[mx.array, mx.array]:
-        # TODO: use local/sliding window attention where appropriate
         if self.use_local_attention:
             attention_mask = sliding_window_mask
 
@@ -198,6 +197,7 @@ class ModernBertAttention(nn.Module):
             )
             self.config.attention.implementation = AttentionImpl.naive
 
+        attn_weights = None
         match self.config.attention.implementation:
             case AttentionImpl.naive:
                 attn_out, attn_weights = self.naive_attention(
@@ -218,7 +218,7 @@ class ModernBertAttention(nn.Module):
                     mask=attention_mask,
                     stream=stream,
                 )
-                attn_weights = None
+            # TODO: Flash attention
 
         assert attn_out.shape == (batch_size, self.nheads, seq_len, self.head_dim)
         attn_out = attn_out.transpose(0, 2, 1, 3).reshape(batch_size, seq_len, -1)
@@ -229,7 +229,7 @@ class ModernBertAttention(nn.Module):
         h = self.mlp_drop(self.Wo(h))
         assert h.shape == (seq_len, self.config.hidden_dim)
 
-        return (h, attn_weights) if self.config.attention.output_attn else (h, None)
+        return (h, attn_weights)
 
 
 class ModernBertEncoderLayer(nn.Module):
@@ -324,14 +324,14 @@ class ModernBertBackbone(nn.Module):
             all_self_attentions += (attn,)
         x = self.final_norm(h)
 
-        # print(*(a.shape for a in all_self_attentions))
-        # TODO: conditionally pad output
+        # TODO: repad output if flash attention was used.
+
         return {
             "last_hidden_state": x,
             "hidden_states": mx.array(all_hidden_states),
             "attentions": mx.array(
                 all_self_attentions if self.config.attention.output_attn else [mx.nan],
-            )
+            ),
         }
 
 
