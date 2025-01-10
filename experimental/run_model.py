@@ -3,8 +3,8 @@ import numpy as np
 from rich import print
 from transformers import AutoTokenizer, AutoModelForMaskedLM
 
-from modern_bert_mlx import ModernBertBase, ModernBertConfig
-from modern_bert_mlx.data import create_4d_attention_mask_for_sdpa
+from modernbert_mlx import ModernBertBase, ModernBertConfig
+from modernbert_mlx.data import create_4d_attention_mask_for_sdpa
 
 
 def main():
@@ -41,7 +41,7 @@ def main():
 
     model = AutoModelForMaskedLM.from_pretrained(model_id)
     model.config.output_hidden_states = True
-    model.config.output_attentions = False
+    model.config.output_attentions = True
 
     inputs = tokenizer(text, return_tensors="pt")
     print("ModernBert says...")

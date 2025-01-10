@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import List
+from typing import List, Tuple
 
 import mlx.core as mx
 from rich import print
@@ -30,7 +30,7 @@ def compare_attn():
     print(f"diff in attention implementations: {abs_diff(eager_out, sdpa_out)}")
 
 
-def compare(filename: str, keys: List[str]):
+def compare(filename: str, keys: List[str]) -> Tuple[mx.array, mx.array]:
     torch_outs = mx.load(str(TORCH_SAVEDIR / f"{filename}.safetensors"))
     mlx_outs = mx.load(str(MLX_SAVEDIR / f"{filename}.safetensors"))
 
@@ -42,6 +42,33 @@ def compare(filename: str, keys: List[str]):
         ), f"tensor_torch['{key}'] {tensor_torch.shape} does not match shape of  tensor_mlx['{key}'] {tensor_mlx.shape}"
 
         print(f"Difference in `{key}`: {abs_diff(tensor_torch, tensor_mlx).item():.9f}")
+    return torch_outs, mlx_outs
+
+
+def compare_embeddings():
+    torch_outs, mlx_outs = compare("embeddings", ["embeddings"])
+    torch_emb = torch_outs["embeddings"]
+    mlx_emb = mlx_outs["embeddings"]
+    print(torch_emb.shape, mlx_emb.shape)
+    print(torch_emb.min(), torch_emb.mean(), torch_emb.max())
+    print(mlx_emb.min(), mlx_emb.mean(), mlx_emb.max())
+    batch_size, seq_len, hidden_dim = torch_emb.shape
+    fig, ax = plt.subplots(3, 9, figsize=(10, 5))
+    ax = ax.T
+    for i in range(seq_len):
+        im = ax[i, 0].imshow(torch_emb[0, i].reshape(32, 24))
+        ax[i, 0].set_xticks([])
+        ax[i, 0].set_yticks([])
+        im = ax[i, 1].imshow(mlx_emb[0, i].reshape(32, 24))
+        ax[i, 1].set_xticks([])
+        ax[i, 1].set_yticks([])
+        im = ax[i, 2].imshow((torch_emb[0, i] - mlx_emb[0, i]).reshape(32, 24))
+        ax[i, 2].set_xticks([])
+        ax[i, 2].set_yticks([])
+    fig.subplots_adjust(right=0.8)
+    cbar_ax = fig.add_axes([0.9, 0.2, 0.025, 0.7])
+    fig.colorbar(im, cax=cbar_ax)
+    plt.show()
 
 
 def display_hidden_states(out_torch: mx.array, out_mlx: mx.array):
@@ -78,7 +105,8 @@ def display_attentions(out_torch: mx.array, out_mlx: mx.array):
 
 def main():
     compare_attn()
-    compare("embeddings", ["embeddings"])
+    compare_embeddings()
+
     compare("masks", ["attention_mask", "sliding_window_mask"])
 
     torch_outs = mx.load(str(TORCH_SAVEDIR / "backbone-out.safetensors"))

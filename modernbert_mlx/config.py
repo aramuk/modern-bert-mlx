@@ -10,7 +10,7 @@ class AttentionImpl(str, Enum):
 
 
 class AttentionConfig(BaseModel):
-    implementation: AttentionImpl = AttentionImpl.sdpa
+    implementation: AttentionImpl = AttentionImpl.naive
     num_attention_heads: int = 12
     attention_bias: bool = False
     attention_dropout: float = 0.0
@@ -19,7 +19,7 @@ class AttentionConfig(BaseModel):
     local_attention: int = 128
     local_rope_theta: int = 10000.0
     rope_max_pos_embeddings: int = 2048
-    output_attn: bool = False
+    output_attn: bool = True
 
 
 class ModernBertConfig(BaseModel):
