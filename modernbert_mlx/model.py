@@ -4,9 +4,9 @@ import mlx.core as mx
 import mlx.nn as nn
 
 from modernbert_mlx.data import create_4d_attention_mask_for_sdpa
+from modernbert_mlx.logger import logger
 from modernbert_mlx.nn import ModuleList
 from modernbert_mlx.config import ModernBertConfig, AttentionImpl
-
 
 class ModernBertEmbedder(nn.Module):
     def __init__(self, config: ModernBertConfig):
@@ -23,10 +23,10 @@ class ModernBertEmbedder(nn.Module):
 
     def __call__(self, input_ids: mx.array) -> mx.array:
         # TODO: Conditionally run JIT implementation based on self.config.
-        print(input_ids.dtype)
+        logger.debug("{}", input_ids.dtype)
         h = self.drop(self.norm(self.tok_embeddings(input_ids)))
-        print(h.shape)
-        print(h.dtype, h[0,0,0].item())
+        logger.debug("{}", h.shape)
+        logger.debug("{} {}", h.dtype, h[0,0,0].item())
         return h
 
 
@@ -195,9 +195,7 @@ class ModernBertAttention(nn.Module):
             self.config.attention.output_attn
             and self.config.attention.implementation != AttentionImpl.naive
         ):
-            print(
-                "Warning: attention maps are only output when using implementation = 'naive'. Defaulting to 'naive'"
-            )
+            logger.warning("Attention maps are only output when using implementation = 'naive'. Defaulting to 'naive'")
             self.config.attention.implementation = AttentionImpl.naive
 
         attn_weights = None
